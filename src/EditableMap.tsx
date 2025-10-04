@@ -78,7 +78,7 @@ L.Marker.prototype.options.icon = DefaultIcon;
     if (layer.feature) mapRef.current?.removeLayer(layer);
   });
 
-  fetch("http://192.168.150.105:3001/api/features")
+  fetch("https://editablemapbackend.onrender.com/api/features")
     .then(res => res.json())
     .then((data) => {
       const features = data.features; // full GeoJSON with id & properties
@@ -96,7 +96,7 @@ const bindPopupToLayer = (feature: any, layer: L.Layer) => {
   const popupContainer = document.createElement("div");
 
   const onSave = (updatedProps: Record<string, any>) => {
-    fetch(`http://192.168.150.105:3001/api/features/${feature.id}`, {
+    fetch(`https://editablemapbackend.onrender.com/api/features/${feature.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ properties: updatedProps }),
@@ -107,7 +107,7 @@ const bindPopupToLayer = (feature: any, layer: L.Layer) => {
 
 console.log('delete fir;ed');
 
-    fetch(`http://192.168.150.105:3001/api/features/${feature.id}`, {
+    fetch(`https://editablemapbackend.onrender.com/api/features/${feature.id}`, {
       method: "DELETE",
     }).then(() => reloadFeatures());
   };
@@ -182,7 +182,7 @@ layer.on("popupclose", () => {
       
 console.log('got geojson===',geojson);
 
-      fetch("http://192.168.150.105:3001/react/api/features", {
+      fetch("https://editablemapbackend.onrender.com/react/api/features", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(geojson),
@@ -215,7 +215,7 @@ map.on(L.Draw.Event.DELETED, (e: any) => {
   const layers = e.layers;
   layers.eachLayer(async (layer: any) => {
     if (!layer.feature?.id) return;
-    await fetch(`http://192.168.150.105:3001/api/features/${layer.feature.id}`, { method: "DELETE" });
+    await fetch(`https://editablemapbackend.onrender.com/api/features/${layer.feature.id}`, { method: "DELETE" });
   });
   reloadFeatures();
 });
@@ -234,7 +234,7 @@ map.on("draw:deletestart", () => {console.log('deletestart');map.closePopup();re
 useEffect(() => {
   if (!mapRef.current) return;
 
-  fetch("http://192.168.150.105:3001/api/features")
+  fetch("https://editablemapbackend.onrender.com/api/features")
     .then(res => res.json())
     .then((data) => {
       // Normalize features: extract geojson from your nested structure
@@ -251,7 +251,7 @@ useEffect(() => {
       id,
       properties
     }, (updatedProps) => {
-            fetch(`http://192.168.150.105:3001/api/features/${f.id}`, {
+            fetch(`https://editablemapbackend.onrender.com/api/features/${f.id}`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ properties: updatedProps }),
