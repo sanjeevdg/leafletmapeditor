@@ -1,0 +1,210 @@
+import React, { useEffect, useState } from "react";
+import { MapContainer, TileLayer, GeoJSON, useMap } from "react-leaflet";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+import "leaflet-draw/dist/leaflet.draw.css";
+import "leaflet-draw";
+import { Feature } from "geojson";
+
+
+
+// Backend URLs
+const listUrl = "http://localhost:3001/api/features";
+const saveUrl = "http://localhost:3001/api/features";
+
+const EditableMap = () => {
+  const [features, setFeatures] = useState<any[]>([]);
+
+  // Load features from backend
+  const loadFeatures = async () => {
+    const res = await fetch(listUrl);
+    const data = await res.json();
+
+    if (Array.isArray(data)) {
+      setFeatures(data);
+    } else if (data.features) {
+      setFeatures(data.features);
+    } else {
+      setFeatures([]);
+    }
+  };
+
+  // Save features (POST)
+  const saveFeatures = async (features: any[]) => {
+    const cleanFeatures = features.map((f) => ({
+      type: "Feature",
+      geometry: f.geometry,
+      properties: f.properties || {},
+    }));
+
+console.log('features-length',features.length);
+console.log('clean-features-length',cleanFeatures.length);
+
+
+    await fetch(saveUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ features: cleanFeatures }),
+    });
+
+    await loadFeatures(); // reload after save
+  };
+
+  // Update properties only (PUT)
+  const updateFeatureProperties = async (
+    id: number | string,
+    properties: Record<string, any>
+  ) => {
+    await fetch(`${saveUrl}/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ properties }),
+    });
+    await loadFeatures(); // refresh map
+  };
+
+  useEffect(() => {
+    loadFeatures();
+  }, []);
+
+  return (
+    <MapContainer
+      center={[21.1458, 79.0882]} // Nagpur
+      zoom={12}
+      style={{ height: "100vh", width: "100%" }}
+    >
+      {/* Basemap from MapTiler */}
+      <TileLayer
+        url={`https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=b59pIgoNGnhNHBDuQlry`}
+        attribution='&copy; <a href="https://www.maptiler.com/">MapTiler</a>'
+      />
+
+      {/* Feature Layer */}
+      <FeatureLayer
+        features={features}
+        saveFeatures={saveFeatures}
+        updateFeatureProperties={updateFeatureProperties}
+      />
+    </MapContainer>
+  );
+};
+
+// ---------------- FEATURE LAYER ----------------
+
+const FeatureLayer = ({ features, saveFeatures, updateFeatureProperties }: any) => {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!map) return;
+
+    // Init draw controls
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+
+   const drawControl = new L.Control.Draw({
+  edit: { featureGroup: drawnItems },
+  draw: {
+    polygon: true,
+    polyline: true,
+    rectangle: true,
+    circle: true,
+    marker: true,
+  },
+});
+
+map.addControl(drawControl);
+
+map.on(L.Draw.Event.CREATED, (e: any) => {
+  const layer = e.layer;
+  drawnItems.addLayer(layer);
+  const geojson = layer.toGeoJSON();
+  const newFeature = {
+    type: "Feature",
+    geometry: geojson.geometry,
+    properties: {},
+  };
+  console.log('calling...',geojson);
+  console.log('calling222...',[...features, newFeature].length);
+  saveFeatures([...features, newFeature]);
+});
+
+
+    // Cleanup
+    return () => {
+      map.removeControl(drawControl);
+      map.removeLayer(drawnItems);
+    };
+  }, [map]);
+// removed features, saveFeatures from above dependency array
+  // Attach popups for editing properties
+  useEffect(() => {
+    if (!map) return;
+
+    const layerGroup = new L.FeatureGroup();
+    features.forEach((f: Feature & { id: string | number }) => {
+      const layer = L.geoJSON(f);
+      layer.bindPopup(() => {
+        const container = document.createElement("div");
+
+        const props = { ...f.properties };
+        const keys = Object.keys(props);
+
+        const form = document.createElement("form");
+        form.style.minWidth = "250px";
+
+        // Existing fields
+        keys.forEach((k) => {
+          const input = document.createElement("input");
+          input.type = "text";
+          input.value = props[k] ?? "";
+          input.placeholder = k;
+          input.onchange = (e: any) => {
+            props[k] = e.target.value;
+          };
+          form.appendChild(input);
+          form.appendChild(document.createElement("br"));
+        });
+
+        // Add new field button
+        const addBtn = document.createElement("button");
+        addBtn.type = "button";
+        addBtn.innerText = "Add field";
+        addBtn.onclick = () => {
+          const newKey = prompt("Enter new property key:");
+          if (!newKey) return;
+          props[newKey] = "";
+          updateFeatureProperties(f.id, props);
+          map.closePopup();
+        };
+        form.appendChild(addBtn);
+
+        form.appendChild(document.createElement("br"));
+
+        // Save button
+        const saveBtn = document.createElement("button");
+        saveBtn.type = "button";
+        saveBtn.innerText = "Save";
+        saveBtn.onclick = () => {
+          updateFeatureProperties(f.id, props);
+          map.closePopup();
+        };
+        form.appendChild(saveBtn);
+
+        container.appendChild(form);
+        return container;
+      });
+      layerGroup.addLayer(layer);
+    });
+
+    layerGroup.addTo(map);
+
+    return () => {
+      map.removeLayer(layerGroup);
+    };
+  }, [map, features, updateFeatureProperties]);
+
+  return null;
+};
+
+export default EditableMap;
+

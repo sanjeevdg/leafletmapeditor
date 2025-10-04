@@ -1,0 +1,295 @@
+import React, { useEffect, useRef, useState } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+import "leaflet-draw/dist/leaflet.draw.css";
+import "leaflet-draw"; // Import Draw plugin
+import { createRoot } from "react-dom/client";
+
+
+// Type augmentations for leaflet-draw
+declare module "leaflet" {
+  namespace Control {
+    class Draw extends Control {
+      constructor(options?: any);
+    }
+  }
+
+  
+
+
+  namespace Draw {
+    namespace Event {
+      const CREATED: string;
+      const EDITED: string;
+      const DELETED: string;
+      const EDITSTART: string;
+      const DRAWSTART: string;
+  const DRAWSTOP: string;
+  const EDITSTOP: string;
+  const DELETEMODE: string;
+  const DELETEMODESTOP: string;
+      const DELETEMODESTART: string;
+    }
+  }
+}
+
+
+
+interface Feature {
+  id: string | number;
+  type: "Feature";
+  geometry: GeoJSON.Geometry;
+  properties: Record<string, any>;
+}
+
+interface FeatureCollection {
+  type: "FeatureCollection";
+  features: Feature[];
+}
+
+export default function EditableMap() {
+  const mapRef = useRef<L.Map | null>(null);
+  const [features, setFeatures] = useState<Feature[]>([]);
+const drawControlRef = useRef<L.Control.Draw | null>(null);
+const drawModeRef = useRef<"draw" | "edit" | "delete" | null>(null);
+const [drawMode, setDrawMode] = useState<"none" | "draw" | "edit" | "delete">("none");
+
+  const reloadFeatures = async () => {
+    const res = await fetch("http://localhost:3001/api/features");
+    const data: FeatureCollection = await res.json();
+    setFeatures(data.features || []);
+  };
+
+  useEffect(() => {
+    const map = L.map("map", {
+      center: [15.5, 75],
+      zoom: 3,
+    });
+    mapRef.current = map;
+
+    L.tileLayer(
+      "https://api.maptiler.com/maps/streets/256/{z}/{x}/{y}.png?key=b59pIgoNGnhNHBDuQlry",
+      {
+        attribution: '&copy; <a href="https://www.maptiler.com/">MapTiler</a>',
+      }
+    ).addTo(map);
+
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+
+    const drawControl = new L.Control.Draw({
+      edit: { featureGroup: drawnItems,remove: true },
+      draw: { polygon: true, polyline: true, rectangle: true, circle: false, marker: true },
+    });
+    map.addControl(drawControl);
+    drawControlRef.current = drawControl;
+    // On create
+
+	mapRef.current.on(L.Draw.Event.DRAWSTART, () => drawModeRef.current= "draw");
+  mapRef.current.on(L.Draw.Event.DRAWSTOP, () => drawModeRef.current = null);
+  mapRef.current.on(L.Draw.Event.EDITSTART, () => drawModeRef.current= "edit");
+  mapRef.current.on(L.Draw.Event.EDITSTOP, () => drawModeRef.current = null);
+  //mapRef.current.on(L.Draw.Event.DELETEMODESTART, () => drawModeRef.current= "delete"); // pseudo-event
+  //mapRef.current.on(L.Draw.Event.DELETEMODESTOP, () => setDrawMode("none")); // pseudo-event
+
+
+
+
+    map.on(L.Draw.Event.CREATED, (e: any) => {
+      const layer = e.layer;
+      drawnItems.addLayer(layer);
+      const geojson = layer.toGeoJSON();
+      fetch("http://localhost:3001/api/features", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ features: [geojson] }),
+      }).then((res) => res.json())
+    .then((data) => {
+      // Assign DB id to layer.feature so delete knows what to remove
+     // layer.feature.id = data.id;
+      reloadFeatures();
+    });
+    });
+
+map.on("click", (e) => {
+  // Only show popup if NOT in edit/delete mode
+
+console.log('mydrawmode==',drawModeRef);
+
+  if (drawMode === "delete" || drawMode === "edit") return;
+
+/*
+  const layer = e.target; // or however you get the clicked layer
+  if (layer) {
+    layer.bindPopup(createPopupContent(layer.feature, onSave)).openPopup();
+  } */
+});
+
+
+
+map.on(L.Draw.Event.DELETED, (e: any) => {
+  const layers = e.layers;
+  layers.eachLayer(async (layer: any) => {
+    if (!layer.feature?.id) return;
+    await fetch(`http://localhost:3001/api/features/${layer.feature.id}`, { method: "DELETE" });
+  });
+  reloadFeatures();
+});
+
+
+
+map.on("draw:editstart", () => {console.log('editstart');map.closePopup();return;} );
+map.on("draw:deletestart", () => {console.log('deletestart');map.closePopup();return;} );
+
+    return () => {
+      map.remove();
+    };
+  }, []);
+
+
+useEffect(() => {
+  if (!mapRef.current) return;
+
+  fetch("http://localhost:3001/api/features")
+    .then(res => res.json())
+    .then((data) => {
+      // Normalize features: extract geojson from your nested structure
+      const features = data.features.map((f: any) => f);
+
+      const layerGroup = L.geoJSON(features, {
+        onEachFeature: (f: Feature, layer) => {
+          // bind popup, etc.
+
+          const properties = f.properties || {};
+          const id = f.id as string | number;
+
+          layer.bindPopup(createPopupContent( {
+      id,
+      properties
+    }, (updatedProps) => {
+            fetch(`http://localhost:3001/api/features/${f.id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ properties: updatedProps }),
+            }).then(() => reloadFeatures());
+          }));
+         }
+      });
+    if (mapRef.current) {
+      layerGroup.addTo(mapRef.current);
+    }
+    });
+}, [mapRef.current]);
+
+
+
+  // Render features as GeoJSON layers
+  useEffect(() => {
+    if (!mapRef.current) return;
+
+    // Clear previous
+/*
+    mapRef.current.eachLayer((layer) => {
+      if ((layer as any).feature) {
+        mapRef.current?.removeLayer(layer);
+      }
+    });
+
+
+    features.forEach((feature) => {
+      const geoLayer = L.geoJSON(feature, {
+        onEachFeature: (f: Feature, layer) => {
+          const properties = f.properties || {};
+          layer.bindPopup(createPopupContent(f, (updatedProps) => {
+            fetch(`http://localhost:3001/api/features/${f.id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ properties: updatedProps }),
+            }).then(() => reloadFeatures());
+          }));
+        },
+      });
+      geoLayer.addTo(mapRef.current!);
+    }); */
+     // reloadFeatures();
+  }, [features]);
+
+  return <div id="map" style={{ height: "100vh", width: "100%" }} />;
+}
+
+// ------------------ Popup Component ------------------
+
+function PopupEditor({
+  feature,
+  onSave,
+}: {
+  feature: { id?: string | number; properties?: Record<string, any> };
+  onSave: (props: Record<string, any>) => void;
+}) {
+  // initialize from feature.properties or empty object
+  const [localProps, setLocalProps] = useState<Record<string, any>>(
+    feature?.properties ? { ...feature.properties } : {}
+  );
+
+  const updateKey = (oldKey: string, newKey: string) => {
+    setLocalProps(prev => {
+      const newProps = { ...prev };
+      const value = newProps[oldKey];
+      delete newProps[oldKey];
+      newProps[newKey] = value;
+      return newProps;
+    });
+  };
+
+  const updateValue = (key: string, value: string) => {
+    setLocalProps(prev => ({ ...prev, [key]: value }));
+  };
+
+  const addField = () => {
+    setLocalProps(prev => ({ ...prev, "": "" }));
+  };
+
+  return (
+    <div style={{ width: "250px", padding: "8px" }}>
+      <h4>Feature {feature?.id ?? "(no id)"} </h4>
+
+      {Object.entries(localProps).map(([key, value], i) => (
+        <div key={i} style={{ marginBottom: "6px" }}>
+          <input
+            type="text"
+            defaultValue={key}
+            style={{ width: "40%", marginRight: "4px" }}
+            onBlur={(e) => updateKey(key, e.target.value)}
+          />
+          <input
+            type="text"
+            defaultValue={value}
+            style={{ width: "50%" }}
+            onBlur={(e) => updateValue(key, e.target.value)}
+          />
+        </div>
+      ))}
+
+      <button onClick={addField}>+ Add field</button>
+      <button style={{ marginLeft: "10px" }} onClick={() => onSave(localProps)}>
+        Save
+      </button>
+    </div>
+  );
+}
+
+
+function createPopupContent(
+  feature: { id: string | number; properties: Record<string, any> },
+  onSave: (props: Record<string, any>) => void
+) {
+
+//console.log('mfeaturem==',feature);
+//console.log('monsavem==',onSave);
+
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  root.render(<PopupEditor feature={feature} onSave={onSave} />);
+  return container;
+}
+

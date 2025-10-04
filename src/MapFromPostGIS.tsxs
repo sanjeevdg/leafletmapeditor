@@ -1,0 +1,164 @@
+import React, { useEffect, useRef } from "react";
+import maplibregl, { StyleSpecification, MapMouseEvent, MapGeoJSONFeature } from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
+
+interface MapFromPostGISProps {
+  tileUrlTemplate: string;
+  sourceLayer?: string;
+  tileType?: "vector" | "raster";
+  initialCenter?: [number, number];
+  initialZoom?: number;
+  mapStyle?: StyleSpecification | string;
+  showControls?: boolean;
+  onFeatureClick?: (feature: MapGeoJSONFeature, event: MapMouseEvent) => void;
+  className?: string;
+}
+
+const defaultRasterStyle: StyleSpecification = {
+  version: 8,
+  sources: {
+    postgisTiles: {
+      type: "raster",
+      tiles: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      tileSize: 256,
+    },
+  },
+  layers: [
+    {
+      id: "postgis-raster",
+      type: "raster",
+      source: "postgisTiles",
+    },
+  ],
+};
+
+
+
+export default function MapFromPostGIS({
+  tileUrlTemplate,
+  sourceLayer,
+  tileType = "vector",
+  initialCenter = [78.088, 21.1458],
+  initialZoom = 8,
+  mapStyle,
+  showControls = true,
+  onFeatureClick,
+  className = "w-full h-[500px] rounded-2xl shadow-lg",
+}: MapFromPostGISProps) {
+  const mapContainer = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+
+  const centerKey = JSON.stringify(initialCenter); // stable primitive for dependency
+
+  useEffect(() => {
+    if (!tileUrlTemplate) {
+      console.error("MapFromPostGIS: tileUrlTemplate prop is required");
+      return;
+    }
+
+    if (mapRef.current) return;
+
+    const map = new maplibregl.Map({
+      container: mapContainer.current as HTMLElement,
+      style: defaultRasterStyle,
+//typeof mapStyle === "string" || mapStyle ? mapStyle : undefined,
+      center: initialCenter,
+      zoom: initialZoom,
+    });
+
+    mapRef.current = map;
+
+    if (showControls) {
+      map.addControl(new maplibregl.NavigationControl());
+    }
+
+    map.on("load", () => {
+      try {
+        if (tileType === "raster") {
+          if (!map.getSource("postgisTiles")) {
+            map.addSource("postgisTiles", {
+              type: "raster",
+              tiles: [tileUrlTemplate],
+              tileSize: 256,
+            });
+          }
+          if (!map.getLayer("postgis-raster")) {
+            map.addLayer({ id: "postgis-raster", type: "raster", source: "postgisTiles" });
+          }
+        } else {
+          if (!map.getSource("postgisTiles")) {
+            map.addSource("postgisTiles", {
+              type: "vector",
+              tiles: [tileUrlTemplate],
+              maxzoom: 14,
+            });
+          }
+
+          const layerId = sourceLayer || undefined;
+
+          if (!map.getLayer("postgis-fill")) {
+            map.addLayer({
+              id: "postgis-fill",
+              type: "fill",
+              source: "postgisTiles",
+              "source-layer": layerId,
+              paint: { "fill-color": "#088", "fill-opacity": 0.5 },
+            });
+          }
+
+          if (!map.getLayer("postgis-line")) {
+            map.addLayer({
+              id: "postgis-line",
+              type: "line",
+              source: "postgisTiles",
+              "source-layer": layerId,
+              paint: { "line-color": "#000", "line-width": 1 },
+            });
+          }
+        }
+      } catch (err) {
+        console.warn("MapFromPostGIS: failed to add default layers", err);
+      }
+
+      if (tileType === "vector") {
+        const clickHandler = (e: MapMouseEvent) => {
+          const features = map.queryRenderedFeatures(e.point, { layers: ["postgis-fill", "postgis-line"] });
+          if (!features || !features.length) return;
+          const feature = features[0];
+
+          const coords = e.lngLat;
+          const props = feature.properties || {};
+          const content = Object.keys(props)
+            .slice(0, 8)
+            .map((k) => `<strong>${k}:</strong> ${props[k]}`)
+            .join("<br>");
+
+          new maplibregl.Popup({ offset: 10 }).setLngLat(coords).setHTML(content).addTo(map);
+
+          if (onFeatureClick) {
+            onFeatureClick(feature, e);
+          }
+        };
+
+        map.on("click", clickHandler);
+        map.on("mouseenter", "postgis-fill", () => (map.getCanvas().style.cursor = "pointer"));
+        map.on("mouseleave", "postgis-fill", () => (map.getCanvas().style.cursor = "default"));
+      }
+    });
+
+    return () => {
+      try {
+        map.remove();
+      } catch {}
+    };
+  }, [tileUrlTemplate, sourceLayer, tileType, initialCenter ,centerKey, initialZoom, mapStyle, showControls, onFeatureClick]);
+
+  return (
+    <div className={className}>
+      <div ref={mapContainer} style={{ width: '100%', height: '500px' }} />
+    </div>
+  );
+}
+
+
+

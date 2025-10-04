@@ -1,0 +1,280 @@
+import React, { useEffect, useRef } from "react";
+import { MapContainer } from "react-leaflet";
+import { useLeafletContext } from "@react-leaflet/core";
+import L from "leaflet";
+
+import "leaflet/dist/leaflet.css";
+import "leaflet.vectorgrid";          // attaches L.vectorGrid
+import "@maplibre/maplibre-gl-leaflet";         // attaches L.maplibreGL
+import "leaflet-draw";                // attaches draw controls
+import "leaflet-draw/dist/leaflet.draw.css";
+
+type GeoJSONFeature = GeoJSON.Feature<GeoJSON.Geometry, any>;
+
+interface MapEditorProps {
+  maptilerKey: string;
+  postgisTileUrl: string;            // e.g. http://localhost:3000/tiles/{z}/{x}/{y}.pbf
+  listUrl: string;                   // GET -> list features (GeoJSON FeatureCollection or array of features)
+  saveUrl: string;                   // POST -> save feature, returns saved feature (with id)
+  deleteUrl: (id: string | number) => string; // function that returns delete endpoint for given id
+  center?: [number, number];
+  zoom?: number;
+}
+
+const MapTilerVectorBasemap: React.FC<{ styleUrl: string }> = ({ styleUrl }) => {
+  const context = useLeafletContext();
+  useEffect(() => {
+    if (!context.map) return;
+    const layer = (L as any).maplibreGL({ style: styleUrl });
+    layer.addTo(context.map);
+    return () => layer.remove();
+  }, [context.map, styleUrl]);
+  return null;
+};
+
+const PostGISVectorOverlay: React.FC<{ url: string; styles?: any }> = ({ url, styles }) => {
+  const context = useLeafletContext();
+  useEffect(() => {
+    if (!context.map) return;
+    const proto = (L as any).vectorGrid?.protobuf;
+    if (!proto) {
+      console.warn("vectorGrid.protobuf not available; ensure leaflet.vectorgrid is imported for side-effects.");
+      return;
+    }
+
+    const vectorTileLayer = (L as any).vectorGrid.protobuf(url, {
+      vectorTileLayerStyles: styles || {},
+      interactive: false,
+      maxZoom: 22,
+    });
+
+    vectorTileLayer.addTo(context.map);
+    return () => vectorTileLayer.remove();
+  }, [context.map, url, styles]);
+  return null;
+};
+
+/**
+ * MapEditor main component
+ */
+const MapEditor: React.FC<MapEditorProps> = ({
+  maptilerKey,
+  postgisTileUrl,
+  listUrl,
+  saveUrl,
+  deleteUrl,
+  center = [21.1458, 79.0882],
+  zoom = 8,
+}) => {
+  const drawnItemsRef = useRef<L.FeatureGroup | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const styleUrl = `https://api.maptiler.com/maps/streets-v2/style.json?key=${maptilerKey}`;
+
+  // Helper: convert a Leaflet layer to a GeoJSON feature with properties preserved
+  function layerToFeature(layer: any): GeoJSONFeature {
+    const gj = layer.toGeoJSON();
+    if (!gj.properties) gj.properties = {};
+    // if feature already has id in layer.options or layer.feature, keep it
+    // Ensure id is at properties.id (server-friendly)
+    if (layer.feature && layer.feature.properties && layer.feature.properties.id) {
+      gj.properties.id = layer.feature.properties.id;
+    } else if (layer.options && layer.options.id) {
+      gj.properties.id = layer.options.id;
+    }
+    return gj as GeoJSONFeature;
+  }
+
+  // Add a loaded GeoJSON feature (from server) to drawnItems and ensure editable
+  function addFeatureToDraw(layerGeoJSON: GeoJSONFeature, fg: L.FeatureGroup) {
+    const layer = L.geoJSON(layerGeoJSON, {
+      pointToLayer: (feature, latlng) => {
+        // default marker; customize if you want
+        return L.marker(latlng);
+      },
+    });
+
+    layer.eachLayer((l) => {
+      // persist server id into layer.feature.properties so delete/save handlers can read it
+      const anyL: any = l;
+      if (!anyL.feature) anyL.feature = (l as any).toGeoJSON();
+      // copy properties id to layer.feature.properties.id if server returned it
+      if (layerGeoJSON.properties && layerGeoJSON.properties.id) {
+        anyL.feature.properties = anyL.feature.properties || {};
+        anyL.feature.properties.id = layerGeoJSON.properties.id;
+      }
+      fg.addLayer(anyL);
+    });
+  }
+
+  // Initialize map: set refs and draw control
+  const onMapReady = (mapInstance: L.Map | null) => {
+    if (!mapInstance) return;
+    mapRef.current = mapInstance;
+
+    // create a FeatureGroup that will store editable layers
+    if (!drawnItemsRef.current) {
+      drawnItemsRef.current = new L.FeatureGroup();
+      mapInstance.addLayer(drawnItemsRef.current);
+    }
+
+    // Draw control
+    const drawControl = new (L as any).Control.Draw({
+      edit: {
+        featureGroup: drawnItemsRef.current,
+        poly: { allowIntersection: false },
+      },
+      draw: {
+        polygon: { allowIntersection: false, showArea: true, shapeOptions: { color: "#bada55" } },
+        polyline: {},
+        rectangle: false,
+        circle: false,
+        circlemarker: false,
+        marker: {},
+      },
+    });
+    mapInstance.addControl(drawControl);
+
+    // Load existing features from server and add to drawnItems
+    (async function loadFeatures() {
+      try {
+        const resp = await fetch(listUrl, { credentials: "same-origin" });
+        if (!resp.ok) throw new Error(`List failed: ${resp.status}`);
+        const data = await resp.json();
+        // Accept either FeatureCollection or array
+        const features: GeoJSONFeature[] =
+          Array.isArray(data) ? data : data.type === "FeatureCollection" ? data.features : [];
+        
+        features.forEach((f) => addFeatureToDraw(f, drawnItemsRef.current!));
+
+        console.log('features==',features);
+
+      } catch (err) {
+        console.error("Failed to load features:", err);
+      }
+    })();
+
+    // CREATE handler
+    mapInstance.on((L as any).Draw.Event.CREATED, async (event: any) => {
+      const layer = event.layer;
+      drawnItemsRef.current!.addLayer(layer);
+
+      const feature = layerToFeature(layer);
+const payload = {
+  type: "FeatureCollection",
+  features: [feature],
+};
+      try {
+        const res = await fetch(saveUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          credentials: "same-origin",
+        });
+        if (!res.ok) throw new Error(`Save failed ${res.status}`);
+        const saved = await res.json();
+        // attempt to store server id in layer.feature.properties.id
+        const anyLayer: any = layer;
+        anyLayer.feature = anyLayer.feature || {};
+        anyLayer.feature.properties = anyLayer.feature.properties || {};
+        if (saved && (saved.id || (saved.properties && saved.properties.id))) {
+          anyLayer.feature.properties.id = saved.id ?? saved.properties?.id;
+        } else if (saved && saved.properties && saved.properties.id) {
+          anyLayer.feature.properties.id = saved.properties.id;
+        }
+        console.log("Saved new feature:", saved);
+      } catch (err) {
+        console.error("Failed to save created feature:", err);
+        // Remove layer on failure to avoid unsynced features — or keep it and mark as unsaved
+        drawnItemsRef.current!.removeLayer(layer);
+        alert("Failed to save feature. See console.");
+      }
+    });
+
+    // EDIT handler - save each edited layer
+    mapInstance.on((L as any).Draw.Event.EDITED, async (event: any) => {
+      const layersEdited: L.Layer[] = [];
+      event.layers.eachLayer((l: L.Layer) => layersEdited.push(l));
+      for (const l of layersEdited) {
+        const feature = layerToFeature(l);
+        // require id to update; if no id, treat as create (POST)
+        const id = feature.properties?.id;
+        try {
+          const method = id ? "PUT" : "POST";
+          const url = id && typeof deleteUrl === "function" ? saveUrl : saveUrl;
+          const res = await fetch(url, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(feature),
+            credentials: "same-origin",
+          });
+          if (!res.ok) throw new Error(`Save failed ${res.status}`);
+          const saved = await res.json();
+          // store returned id
+          const anyL: any = l;
+          anyL.feature = anyL.feature || {};
+          anyL.feature.properties = anyL.feature.properties || {};
+          anyL.feature.properties.id = saved.id ?? saved.properties?.id ?? anyL.feature.properties.id;
+          console.log("Saved edited feature:", saved);
+        } catch (err) {
+          console.error("Failed to save edited feature:", err);
+          alert("Failed to save edited feature. See console.");
+        }
+      }
+    });
+
+    // DELETE handler - call delete endpoint per removed layer
+    mapInstance.on((L as any).Draw.Event.DELETED, async (event: any) => {
+      const layersRemoved: L.Layer[] = [];
+      event.layers.eachLayer((l: L.Layer) => layersRemoved.push(l));
+      for (const l of layersRemoved) {
+        const feature = layerToFeature(l);
+        const id = feature.properties?.id;
+        if (!id) {
+          // if no id (not saved), just skip
+          continue;
+        }
+        try {
+          const delUrl = deleteUrl(id);
+          const res = await fetch(delUrl, { method: "DELETE", credentials: "same-origin" });
+          if (!res.ok) throw new Error(`Delete failed ${res.status}`);
+          console.log("Deleted feature id:", id);
+        } catch (err) {
+          console.error("Failed to delete feature:", err);
+          alert("Failed to delete feature. See console.");
+        }
+      }
+    });
+  };
+
+  // small wrapper map component which gives us access to the map instance once created
+  const MapWrapper: React.FC = () => {
+    const ctxt = useLeafletContext();
+    useEffect(() => {
+      // only called once when context.map is present
+      if (ctxt.map && !mapRef.current) onMapReady(ctxt.map);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ctxt.map]);
+    return null;
+  };
+
+  return (
+    <MapContainer center={center} zoom={zoom} style={{ height: "100vh", width: "100%" }}>
+      <MapTilerVectorBasemap styleUrl={styleUrl} />
+      <PostGISVectorOverlay
+        url={postgisTileUrl}
+        styles={{
+          // Optional fallback styles for tile overlay (if you want to view it under drawn features)
+          my_layer: {
+            point: { radius: 4, fillColor: "#ff0000", color: "#000", weight: 1, fillOpacity: 0.8 },
+            line: { color: "#0000ff", weight: 2 },
+            polygon: { color: "#008800", fillColor: "#00aa00", fillOpacity: 0.2 },
+          },
+        }}
+      />
+      <MapWrapper />
+    </MapContainer>
+  );
+};
+
+export default MapEditor;
+

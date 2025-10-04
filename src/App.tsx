@@ -1,26 +1,36 @@
-import React from 'react';
-import logo from './logo.svg';
-import './App.css';
+import React, { useEffect, useRef } from "react";
+import maplibregl, { StyleSpecification, MapMouseEvent, MapGeoJSONFeature } from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
 
 function App() {
-  return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.tsx</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
-    </div>
-  );
+
+const mapContainer = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+
+
+  const map = new maplibregl.Map({
+  container: mapContainer.current!,
+  style: {
+    version: 8,
+    sources: {
+      postgisTiles: {
+        type: "raster",
+        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        tileSize: 256,
+      },
+    },
+    layers: [
+      {
+        id: "osm",
+        type: "raster",
+        source: "postgisTiles",
+      },
+    ],
+  },
+  center: [78.088, 21.1458],
+  zoom: 8,
+});
+
 }
 
 export default App;
