@@ -18,10 +18,7 @@ declare module "leaflet" {
     }
   }
 
-  
-
-
-  namespace Draw {
+    namespace Draw {
     namespace Event {
       const CREATED: string;
       const EDITED: string;
